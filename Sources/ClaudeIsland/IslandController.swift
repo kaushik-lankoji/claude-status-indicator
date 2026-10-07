@@ -47,7 +47,7 @@ final class IslandController: NSObject {
     private var leftAt: Date?
     private var popoutTask: DispatchWorkItem?
 
-    private static let canvas = CGSize(width: 520, height: 280)
+    private static let canvas = CGSize(width: 400, height: 560)
 
     private var soundOn: Bool {
         get { UserDefaults.standard.object(forKey: "sound") as? Bool ?? true }
@@ -55,7 +55,9 @@ final class IslandController: NSObject {
     }
 
     func start() {
-        hosting = IslandHostingView(rootView: IslandView(model: model) { [weak self] in self?.open($0) })
+        hosting = IslandHostingView(rootView: IslandView(model: model, actions: IslandActions(
+            open: { [weak self] in self?.open($0) },
+            decide: { [weak self] in self?.decide($0, $1) })))
         hosting.menuProvider = { [weak self] in self?.menu() ?? NSMenu() }
         panel.contentView = hosting
         place(force: true)
@@ -81,8 +83,9 @@ final class IslandController: NSObject {
         self.screen = screen
         model.metrics = Metrics.of(screen)
         let size = Self.canvas
-        panel.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - size.height,
-                              width: size.width, height: size.height), display: true)
+        let x = model.metrics.left.map { $0 - IslandView.shadowRoom } ?? screen.frame.midX - size.width / 2
+        panel.setFrame(NSRect(x: x, y: screen.frame.maxY - size.height, width: size.width, height: size.height),
+                       display: true)
     }
 
     // MARK: State
@@ -95,12 +98,17 @@ final class IslandController: NSObject {
         if changed.contains(where: { $0.phase == .attention }) {
             play("Ping")
         }
+        // Looking at the terminal already? Claude Code's own prompt is right there, so don't hold it back.
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        for s in changed where s.request != nil && s.terminal != nil && s.terminal == front {
+            decide(s, .terminal)
+        }
+
         let finished = changed.filter { $0.phase == .done }
         if !finished.isEmpty {
             play(finished.contains { $0.failed == true } ? "Funk" : "Glass")
             popOut()
             // Already looking at the terminal? Then a moment on screen is enough.
-            let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             for s in finished where s.terminal != nil && s.terminal == front {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
                     self?.acknowledge(s, onlyIfSince: s.since)
@@ -127,14 +135,32 @@ final class IslandController: NSObject {
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
               let id = app.bundleIdentifier else { return }
         if !model.hovering { place() }
-        for s in model.sessions where s.phase == .done && s.terminal == id {
-            acknowledge(s)
+        for s in model.sessions where s.terminal == id {
+            if s.phase == .done { acknowledge(s) }
+            if s.request != nil { decide(s, .terminal) }
         }
+    }
+
+    /// Answer a held permission prompt. `.terminal` hands it back to Claude Code's own prompt.
+    private func decide(_ s: Session, _ verdict: Store.Verdict) {
+        guard let request = s.request else { return }
+        Store.decide(request.id, verdict)
+        // Show the new state at once; the hook confirms it a moment later.
+        Store.update(s.id) { latest in
+            guard latest.request?.id == request.id else { return }
+            latest.request = nil
+            if verdict != .terminal {
+                latest.move(to: .working, at: Date().timeIntervalSince1970)
+                latest.clearActivity()
+            }
+        }
+        monitor.refresh()
     }
 
     /// Jump to the terminal the session lives in.
     private func open(_ s: Session) {
         if s.phase == .done { acknowledge(s) }
+        if s.request != nil { decide(s, .terminal) }
         guard let id = s.terminal,
               let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return }
         let config = NSWorkspace.OpenConfiguration()
@@ -170,8 +196,9 @@ final class IslandController: NSObject {
     private func pointerMoved() {
         guard let screen else { return }
         let size = model.size
-        let island = NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - size.height,
-                            width: size.width, height: size.height)
+        let island = NSRect(x: model.metrics.left ?? screen.frame.midX - size.width / 2,
+                            y: screen.frame.maxY - model.metrics.inset - size.height,
+                            width: size.width, height: size.height).insetBy(dx: -6, dy: -6)
         let inside = island.contains(NSEvent.mouseLocation)
         if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
 

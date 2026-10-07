@@ -6,10 +6,12 @@ public enum Store {
     public static let root = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".claude-island", isDirectory: true)
     public static let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
+    public static let decisionsDir = root.appendingPathComponent("decisions", isDirectory: true)
     public static let pidFile = root.appendingPathComponent("app.pid")
 
     public static func prepare() {
         try? FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: decisionsDir, withIntermediateDirectories: true)
     }
 
     public static func locked<T>(_ body: () throws -> T) rethrows -> T {
@@ -68,8 +70,36 @@ public enum Store {
         }
     }
 
-    private static func url(for id: String) -> URL? {
+    // MARK: Decisions
+
+    /// How the dock answered a permission prompt. `terminal` hands it back to Claude Code's own prompt.
+    public enum Verdict: String, Codable, Sendable {
+        case allow, deny, terminal
+    }
+
+    public static func decide(_ requestID: String, _ verdict: Verdict) {
+        guard let dst = decisionURL(requestID), let data = try? JSONEncoder().encode(verdict) else { return }
+        prepare()
+        let tmp = decisionsDir.appendingPathComponent(".\(UUID().uuidString).tmp")
+        guard (try? data.write(to: tmp)) != nil else { return }
+        if rename(tmp.path, dst.path) != 0 { try? FileManager.default.removeItem(at: tmp) }
+    }
+
+    public static func decision(for requestID: String) -> Verdict? {
+        guard let url = decisionURL(requestID), let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(Verdict.self, from: data)
+    }
+
+    public static func discardDecision(for requestID: String) {
+        if let url = decisionURL(requestID) { try? FileManager.default.removeItem(at: url) }
+    }
+
+    private static func url(for id: String) -> URL? { file(in: sessionsDir, id) }
+
+    private static func decisionURL(_ id: String) -> URL? { file(in: decisionsDir, id) }
+
+    private static func file(in dir: URL, _ id: String) -> URL? {
         let safe = id.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
-        return safe.isEmpty ? nil : sessionsDir.appendingPathComponent(safe + ".json")
+        return safe.isEmpty ? nil : dir.appendingPathComponent(safe + ".json")
     }
 }

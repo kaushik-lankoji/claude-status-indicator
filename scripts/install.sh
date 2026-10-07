@@ -6,7 +6,8 @@ cd "$(dirname "$0")/.."
 APP="$HOME/Applications/Claude Island.app"
 SETTINGS="$HOME/.claude/settings.json"
 HOOK="$APP/Contents/MacOS/island-hook"
-EVENTS='["SessionStart","SessionEnd","UserPromptSubmit","PreToolUse","PostToolUse","PostToolUseFailure","Notification","Stop","StopFailure"]'
+# Event -> hook timeout in seconds. PermissionRequest waits on you, so it gets a long one.
+EVENTS='{"SessionStart":5,"SessionEnd":5,"UserPromptSubmit":5,"PreToolUse":5,"PostToolUse":5,"PostToolUseFailure":5,"Notification":5,"Stop":5,"StopFailure":5,"PermissionRequest":620}'
 
 echo "Building…"
 swift build -c release
@@ -29,10 +30,10 @@ jq empty "$SETTINGS" || { echo "$SETTINGS isn't valid JSON; fix it and run again
 TMP="$(mktemp)"
 jq --arg cmd "\"$HOOK\"" --argjson events "$EVENTS" '
   .hooks = (.hooks // {})
-  | reduce $events[] as $e (.;
-      .hooks[$e] = (
-        ((.hooks[$e] // []) | map(select(((.hooks // []) | any(.command // "" | contains("island-hook"))) | not)))
-        + [{hooks: [{type: "command", command: $cmd, timeout: 5}]}]
+  | reduce ($events | to_entries[]) as $e (.;
+      .hooks[$e.key] = (
+        ((.hooks[$e.key] // []) | map(select(((.hooks // []) | any(.command // "" | contains("island-hook"))) | not)))
+        + [{hooks: [{type: "command", command: $cmd, timeout: $e.value}]}]
       ))
 ' "$SETTINGS" > "$TMP"
 cat "$TMP" > "$SETTINGS" && rm "$TMP"

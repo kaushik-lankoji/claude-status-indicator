@@ -67,7 +67,15 @@ func terminalBundleID() -> String? {
     }
 }
 
+func appIsRunning() -> Bool {
+    (try? String(contentsOf: Store.pidFile, encoding: .utf8))
+        .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        .flatMap { Proc.info($0) }?.name == "ClaudeIsland"
+}
+
 var wakeApp = false
+/// Set when a permission prompt was handed to the dock; we wait for its answer after the lock is released.
+var awaiting: (id: String, claude: Int32?)?
 
 Store.locked {
     if name == "SessionEnd" {
@@ -131,9 +139,21 @@ Store.locked {
     case "PostToolUse", "PostToolUseFailure":
         work()
 
+    case "PermissionRequest":
+        // Questions and plans can't be answered by allow/deny; they stay in the terminal.
+        guard let tool, tool != "AskUserQuestion", tool != "ExitPlanMode", appIsRunning() else { break }
+        let id = string("tool_use_id") ?? UUID().uuidString
+        let detail = summary(tool: tool, input: toolInput)
+        attention("permission", detail: detail)
+        s.tool = tool
+        s.request = Request(id: id, tool: tool, detail: detail)
+        awaiting = (id, s.pid)
+
     case "Notification":
         switch string("notification_type") {
         case "permission_prompt":
+            // The dock already has this one.
+            if s.request != nil { break }
             let asked = tool ?? s.tool
             let detail = asked == s.tool ? s.detail : nil
             attention("permission", detail: detail)
@@ -164,16 +184,49 @@ Store.locked {
     Store.save(s)
 }
 
+// Hold the prompt open until the dock answers. Anything else (timeout, the app
+// quitting, the person going to the terminal) falls back to Claude Code's own prompt.
+if let (id, claude) = awaiting {
+    var verdict: Store.Verdict?
+    let deadline = Date().addingTimeInterval(600)
+    var beat = 0
+    while Date() < deadline {
+        if let found = Store.decision(for: id) { verdict = found; break }
+        beat += 1
+        if beat % 10 == 0 {
+            if !appIsRunning() || claude.map({ !Proc.isAlive($0) }) == true { break }
+            if Store.load(sessionID)?.request?.id != id { break }
+        }
+        usleep(100_000)
+    }
+    Store.discardDecision(for: id)
+    Store.locked {
+        guard var s = Store.load(sessionID), s.request?.id == id else { return }
+        s.request = nil
+        s.updated = Date().timeIntervalSince1970
+        if verdict == .allow || verdict == .deny {
+            s.move(to: .working, at: s.updated)
+            s.clearActivity()
+        }
+        Store.save(s)
+    }
+    if let behavior = verdict.flatMap({ $0 == .allow ? "allow" : $0 == .deny ? "deny" : nil }) {
+        var decision: [String: Any] = ["behavior": behavior]
+        if behavior == "deny" { decision["message"] = "The user denied this from Claude Island." }
+        let reply: [String: Any] = ["hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": decision]]
+        if let data = try? JSONSerialization.data(withJSONObject: reply) {
+            FileHandle.standardOutput.write(data)
+        }
+    }
+}
+
 // Bring the island up if it isn't running yet.
-if wakeApp {
-    let running = (try? String(contentsOf: Store.pidFile, encoding: .utf8))
-        .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        .flatMap { Proc.info($0) }?.name == "ClaudeIsland"
+if wakeApp, !appIsRunning() {
     let app = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
         .deletingLastPathComponent() // MacOS
         .deletingLastPathComponent() // Contents
         .deletingLastPathComponent() // Claude Island.app
-    if !running, app.pathExtension == "app" {
+    if app.pathExtension == "app" {
         let open = Process()
         open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         open.arguments = ["-g", app.path]

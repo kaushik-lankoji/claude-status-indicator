@@ -4,6 +4,19 @@ public enum Phase: String, Codable, Sendable {
     case idle, working, attention, done
 }
 
+/// A permission prompt the dock can answer, held open by a blocked hook.
+public struct Request: Codable, Equatable, Sendable {
+    public var id: String
+    public var tool: String
+    public var detail: String?
+
+    public init(id: String, tool: String, detail: String?) {
+        self.id = id
+        self.tool = tool
+        self.detail = detail
+    }
+}
+
 /// One Claude Code session, as last reported by its hooks.
 public struct Session: Codable, Equatable, Identifiable, Sendable {
     public var id: String
@@ -28,6 +41,8 @@ public struct Session: Codable, Equatable, Identifiable, Sendable {
     public var reason: String?
     /// The turn ended on an API error rather than finishing.
     public var failed: Bool?
+    /// Set while a hook is waiting for the dock to allow or deny.
+    public var request: Request?
 
     public init(id: String, cwd: String, now: Double) {
         self.id = id
@@ -54,5 +69,6 @@ public struct Session: Codable, Equatable, Identifiable, Sendable {
         detail = nil
         reason = nil
         failed = nil
+        request = nil
     }
 }

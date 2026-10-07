@@ -8,7 +8,7 @@ final class SessionMonitor {
     /// Active (non-idle) sessions, most urgent first, plus the ones that just changed phase.
     var onUpdate: (([Session], [Session]) -> Void)?
 
-    private var known: [String: (Phase, Double)] = [:]
+    private var known: [String: [String]] = [:]
     private var loaded = false
     private var lastActive: [Session] = []
     private var source: DispatchSourceFileSystemObject?
@@ -41,6 +41,13 @@ final class SessionMonitor {
         reload()
     }
 
+    /// What counts as a change worth announcing: a new phase, or a new prompt within one.
+    private static func key(_ s: Session) -> [String] {
+        [s.phase.rawValue, String(s.since), s.request?.id ?? ""]
+    }
+
+    func refresh() { reload() }
+
     private func scheduleReload() {
         guard !reloadQueued else { return }
         reloadQueued = true
@@ -55,11 +62,11 @@ final class SessionMonitor {
         var changed: [Session] = []
         if loaded {
             for s in all where s.phase != .idle {
-                if let old = known[s.id], old == (s.phase, s.since) { continue }
+                if known[s.id] == Self.key(s) { continue }
                 changed.append(s)
             }
         }
-        known = Dictionary(all.map { ($0.id, ($0.phase, $0.since)) }, uniquingKeysWith: { a, _ in a })
+        known = Dictionary(all.map { ($0.id, Self.key($0)) }, uniquingKeysWith: { a, _ in a })
         let active = all.filter { $0.phase != .idle }.sorted(by: Self.urgency)
         guard !loaded || active != lastActive || !changed.isEmpty else { return }
         loaded = true
