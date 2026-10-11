@@ -26,7 +26,7 @@ struct IslandView: View {
 
         ZStack(alignment: .top) {
             if calling {
-                shape.fill(Clawd.color)
+                shape.fill(model.primary?.provider.color ?? .clear)
                     .blur(radius: 12)
                     .modifier(Breathe())
                     .transition(.opacity)
@@ -47,12 +47,13 @@ struct IslandView: View {
     }
 
     private func content(width: CGFloat) -> some View {
-        VStack(spacing: 0) {
+        let both = model.lanes.count > 1
+        return VStack(spacing: 0) {
             header(width: width)
             if model.isExpanded {
                 VStack(spacing: 0) {
                     ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, s in
-                        SessionRow(session: s, actions: actions)
+                        SessionRow(session: s, showsAgent: both, actions: actions)
                             .overlay(alignment: .top) {
                                 if index > 0 { Color.white.opacity(0.07).frame(height: 0.5).padding(.horizontal, 16) }
                             }
@@ -72,22 +73,48 @@ struct IslandView: View {
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
+    /// One agent: its mascot beside its status. With two agents the second is mirrored,
+    /// so the pair reads  🦀 4:57 │ ● ☁  and each side keeps its own mood.
     private func header(width: CGFloat) -> some View {
         let pixel = model.metrics.pixel
+        let lanes = model.lanes
+        let centre = model.isExpanded && model.sessions.count > 1
+
+        func mascot(_ lane: Lane) -> some View {
+            Mascot(agent: lane.agent, phase: lane.lead.phase, since: lane.lead.since, pixel: pixel,
+                   animating: model.isVisible)
+                .offset(y: -pixel) // centre the standing body, not the hop headroom
+                .frame(width: Mascot.width(pixel: pixel))
+        }
+
         return HStack(spacing: 0) {
-            if let s = model.primary {
-                Clawd(phase: s.phase, since: s.since, pixel: pixel, animating: model.isVisible)
-                    .offset(y: -pixel) // centre the standing body, not the hop headroom
-                    .frame(width: CGFloat(Clawd.columns) * pixel)
-                if model.isExpanded, model.sessions.count > 1 {
-                    Text("\(model.sessions.count) sessions")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.38))
-                        .frame(maxWidth: .infinity)
+            if let first = lanes.first {
+                mascot(first)
+                if lanes.count > 1 {
+                    Status(sessions: first.sessions, agent: first.agent).padding(.leading, 10)
+                    Group {
+                        if centre {
+                            Text("\(model.sessions.count) sessions")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.38))
+                        } else {
+                            Color.white.opacity(0.14).frame(width: 1, height: 12)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    Status(sessions: lanes[1].sessions, agent: lanes[1].agent).padding(.trailing, 10)
+                    mascot(lanes[1])
                 } else {
-                    Spacer(minLength: 10)
+                    if centre {
+                        Text("\(model.sessions.count) sessions")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.38))
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Spacer(minLength: 10)
+                    }
+                    Status(sessions: first.sessions, agent: first.agent)
                 }
-                Status(sessions: model.sessions)
             }
         }
         .padding(.horizontal, 12)
@@ -97,9 +124,10 @@ struct IslandView: View {
     }
 }
 
-/// Right side of the dock: a clock for one working session, otherwise one dot per session.
+/// An agent's status: a clock for one working session, otherwise one dot per session.
 private struct Status: View {
     let sessions: [Session]
+    let agent: Agent
 
     var body: some View {
         ZStack {
@@ -110,11 +138,12 @@ private struct Status: View {
             } else {
                 HStack(spacing: 5) {
                     ForEach(sessions.prefix(4)) { s in
-                        Dot(phase: s.phase, failed: s.failed == true)
+                        Dot(phase: s.phase, failed: s.failed == true, agent: agent)
                     }
                 }
             }
         }
+        .frame(minWidth: sessions.count > 1 ? nil : 40, alignment: .trailing)
         .animation(.spring(response: 0.35, dampingFraction: 0.6), value: sessions.first?.phase)
     }
 
@@ -127,7 +156,7 @@ private struct Status: View {
                     .foregroundStyle(.white.opacity(0.5))
             }
         case .attention:
-            Dot(phase: .attention, failed: false)
+            Dot(phase: .attention, failed: false, agent: agent)
         case .done:
             Image(systemName: s.failed == true ? "exclamationmark" : "checkmark")
                 .font(.system(size: 11, weight: .bold))
@@ -141,6 +170,7 @@ private struct Status: View {
 private struct Dot: View {
     let phase: Phase
     let failed: Bool
+    let agent: Agent
     @State private var on = false
 
     var body: some View {
@@ -157,7 +187,7 @@ private struct Dot: View {
 
     private var color: Color {
         switch phase {
-        case .attention: return Clawd.color
+        case .attention: return agent.color
         case .working: return .white.opacity(0.4)
         case .done: return failed ? .failRed : .doneGreen
         case .idle: return .gray
@@ -167,7 +197,10 @@ private struct Dot: View {
 
 private struct SessionRow: View {
     let session: Session
+    let showsAgent: Bool
     let actions: IslandActions
+
+    private var attention: Bool { session.phase == .attention }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -177,12 +210,17 @@ private struct SessionRow: View {
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 Spacer(minLength: 8)
+                if showsAgent {
+                    Text(session.provider.name)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(session.provider.color)
+                }
                 Text(session.project)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.38))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(maxWidth: 110, alignment: .trailing)
+                    .frame(maxWidth: showsAgent ? 90 : 110, alignment: .trailing)
             }
             if let sub = session.subline {
                 Text(sub)
@@ -192,32 +230,38 @@ private struct SessionRow: View {
                     .truncationMode(session.request != nil ? .middle : .tail)
                     .padding(.top, 2)
             }
-            if session.phase == .attention {
+            if attention {
                 Spacer(minLength: 0)
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
                     if session.request != nil {
                         Button("Deny") { actions.decide(session, .deny) }
-                            .buttonStyle(PillStyle(primary: false))
+                            .buttonStyle(PillStyle(primary: false, tint: session.provider.color))
                         Button("Allow") { actions.decide(session, .allow) }
-                            .buttonStyle(PillStyle(primary: true))
+                            .buttonStyle(PillStyle(primary: true, tint: session.provider.color))
                     } else {
-                        Button(session.reason == "plan" ? "Review in terminal" : "Open terminal") { actions.open(session) }
-                            .buttonStyle(PillStyle(primary: true))
+                        Button(openLabel) { actions.open(session) }
+                            .buttonStyle(PillStyle(primary: true, tint: session.provider.color))
                     }
                 }
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, session.phase == .attention ? 11 : 0)
-        .frame(width: Metrics.expandedWidth, height: Metrics.rowHeight(session), alignment: session.phase == .attention ? .top : .center)
+        .padding(.vertical, attention ? 11 : 0)
+        .frame(width: Metrics.expandedWidth, height: Metrics.rowHeight(session), alignment: attention ? .top : .center)
         .contentShape(Rectangle())
-        .onTapGesture { if session.phase != .attention { actions.open(session) } }
+        .onTapGesture { if !attention { actions.open(session) } }
+    }
+
+    private var openLabel: String {
+        if session.provider == .codex { return session.reason == "plan" ? "Review in Codex" : "Open Codex" }
+        return session.reason == "plan" ? "Review in terminal" : "Open terminal"
     }
 }
 
 private struct PillStyle: ButtonStyle {
     let primary: Bool
+    let tint: Color
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -227,7 +271,7 @@ private struct PillStyle: ButtonStyle {
             .frame(minWidth: 64, minHeight: 28)
             .background(
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(primary ? Clawd.color : Color.white.opacity(0.12))
+                    .fill(primary ? tint : Color.white.opacity(0.12))
             )
             .opacity(configuration.isPressed ? 0.7 : 1)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
@@ -235,7 +279,7 @@ private struct PillStyle: ButtonStyle {
     }
 }
 
-/// A soft orange breath around the dock while Claude is waiting on you.
+/// A soft breath of the agent's colour around the dock while it's waiting on you.
 private struct Breathe: ViewModifier {
     @State private var on = false
 

@@ -20,6 +20,8 @@ public struct Request: Codable, Equatable, Sendable {
 /// One Claude Code session, as last reported by its hooks.
 public struct Session: Codable, Equatable, Identifiable, Sendable {
     public var id: String
+    /// Which agent this is. Files written before Codex support have none, which means Claude.
+    public var agent: Agent?
     public var phase: Phase
     public var cwd: String
     public var transcript: String?
@@ -44,13 +46,16 @@ public struct Session: Codable, Equatable, Identifiable, Sendable {
     /// Set while a hook is waiting for the dock to allow or deny.
     public var request: Request?
 
-    public init(id: String, cwd: String, now: Double) {
+    public init(id: String, agent: Agent, cwd: String, now: Double) {
         self.id = id
+        self.agent = agent
         self.phase = .idle
         self.cwd = cwd
         self.since = now
         self.updated = now
     }
+
+    public var provider: Agent { agent ?? .claude }
 
     public var project: String {
         let name = (cwd as NSString).lastPathComponent

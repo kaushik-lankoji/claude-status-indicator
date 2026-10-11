@@ -14,7 +14,7 @@ struct Metrics: Equatable {
     static let moreHeight: CGFloat = 24
     static let maxRows = 4
 
-    /// Lands on whole device pixels so Clawd stays crisp.
+    /// Lands on whole device pixels so the mascots stay crisp.
     var pixel: CGFloat { scale >= 2 ? 1.5 : 2 }
 
     static func rowHeight(_ s: Session) -> CGFloat { s.phase == .attention ? 92 : 48 }
@@ -31,19 +31,35 @@ struct Metrics: Equatable {
     }
 }
 
+/// The sessions of one agent. The dock shows one lane per agent that has something going on.
+struct Lane: Identifiable {
+    let agent: Agent
+    let sessions: [Session]
+    var id: Agent { agent }
+    /// The most urgent session, which sets the mascot's mood.
+    var lead: Session { sessions[0] }
+}
+
 final class IslandModel: ObservableObject {
     /// Non-idle sessions, most urgent first.
     @Published var sessions: [Session] = [] {
-        didSet { if !sessions.isEmpty { lastCount = sessions.count } }
+        didSet { if !sessions.isEmpty { lastShape = lanes.map(\.sessions.count) } }
     }
     @Published var hovering = false
     @Published var popout = false
     @Published var metrics = Metrics(header: 26, inset: 3, left: nil, scale: 2)
 
     /// Keeps the dock's width steady while it fades away.
-    private var lastCount = 1
+    private var lastShape = [1]
 
     var primary: Session? { sessions.first }
+
+    var lanes: [Lane] {
+        Agent.allCases.compactMap { agent in
+            let mine = sessions.filter { $0.provider == agent }
+            return mine.isEmpty ? nil : Lane(agent: agent, sessions: mine)
+        }
+    }
     var isVisible: Bool { primary != nil }
 
     private var needsYou: [Session] { sessions.filter { $0.phase == .attention } }
@@ -63,9 +79,12 @@ final class IslandModel: ObservableObject {
     var hiddenCount: Int { isExpanded ? max(0, wanted.count - Metrics.maxRows) : 0 }
 
     private var compactWidth: CGFloat {
-        let count = sessions.isEmpty ? lastCount : sessions.count
-        let status: CGFloat = count > 1 ? CGFloat(min(count, 4)) * 11 + 4 : 40
-        return 12 + CGFloat(Clawd.columns) * metrics.pixel + 10 + status + 12
+        let shape = sessions.isEmpty ? lastShape : lanes.map(\.sessions.count)
+        let lanes = shape.reduce(CGFloat(0)) { total, count in
+            let status: CGFloat = count > 1 ? CGFloat(min(count, 4)) * 11 + 4 : 40
+            return total + Mascot.width(pixel: metrics.pixel) + 10 + status
+        }
+        return 12 + lanes + CGFloat(shape.count - 1) * 18 + 12
     }
 
     var size: CGSize {

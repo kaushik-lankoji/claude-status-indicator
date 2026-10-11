@@ -1,8 +1,11 @@
 import Foundation
 import IslandCore
 
-// Called by Claude Code hooks with the event JSON on stdin.
-// Must stay fast, print nothing, and always exit 0 so it never gets in Claude's way.
+// Called by Claude Code and Codex hooks with the event JSON on stdin.
+// Codex's hook command passes `codex` as the first argument; anything else is Claude Code.
+// Must stay fast, print nothing, and always exit 0 so it never gets in the agent's way.
+
+let agent: Agent = CommandLine.arguments.dropFirst().first == "codex" ? .codex : .claude
 
 let input = FileHandle.standardInput.readDataToEndOfFile()
 guard let event = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any],
@@ -34,10 +37,27 @@ func oneLine(_ text: String?, prose: Bool = false, limit: Int = 160) -> String? 
     return line.count > limit ? String(line.prefix(limit - 1)) + "…" : line
 }
 
+/// The files an apply_patch patch touches, e.g. "App.swift, Model.swift +2".
+func patchedFiles(_ patch: String) -> String? {
+    let markers = ["*** Add File: ", "*** Update File: ", "*** Delete File: "]
+    var names: [String] = []
+    for line in patch.split(whereSeparator: \.isNewline) {
+        guard let marker = markers.first(where: { line.hasPrefix($0) }) else { continue }
+        let name = (String(line.dropFirst(marker.count)) as NSString).lastPathComponent
+        if !name.isEmpty, !names.contains(name) { names.append(name) }
+    }
+    guard !names.isEmpty else { return nil }
+    let shown = names.prefix(2).joined(separator: ", ")
+    return names.count > 2 ? "\(shown) +\(names.count - 2)" : shown
+}
+
 func summary(tool: String, input: [String: Any]?) -> String? {
     switch tool {
     case "Bash":
+        if let parts = input?["command"] as? [String] { return oneLine(parts.joined(separator: " ")) }
         return oneLine(string("command", in: input))
+    case "apply_patch":
+        return string("command", in: input).flatMap(patchedFiles)
     case "Edit", "MultiEdit", "Write", "Read", "NotebookEdit":
         return (string("file_path", in: input) ?? string("notebook_path", in: input))
             .map { ($0 as NSString).lastPathComponent }
@@ -54,7 +74,8 @@ func summary(tool: String, input: [String: Any]?) -> String? {
     }
 }
 
-func terminalBundleID() -> String? {
+/// The app the session lives in: a terminal for the CLIs, the Codex app for its desktop sessions.
+func hostBundleID(agentPID: Int32?) -> String? {
     let env = ProcessInfo.processInfo.environment
     if let id = env["__CFBundleIdentifier"], !id.isEmpty { return id }
     switch env["TERM_PROGRAM"] {
@@ -63,7 +84,7 @@ func terminalBundleID() -> String? {
     case "WarpTerminal": return "dev.warp.Warp-Stable"
     case "vscode": return "com.microsoft.VSCode"
     case "ghostty": return "com.mitchellh.ghostty"
-    default: return nil
+    default: return agentPID.flatMap(Proc.hostApp)
     }
 }
 
@@ -75,7 +96,7 @@ func appIsRunning() -> Bool {
 
 var wakeApp = false
 /// Set when a permission prompt was handed to the dock; we wait for its answer after the lock is released.
-var awaiting: (id: String, claude: Int32?)?
+var awaiting: (id: String, agent: Int32?)?
 
 Store.locked {
     if name == "SessionEnd" {
@@ -83,12 +104,12 @@ Store.locked {
         return
     }
 
-    var s = Store.load(sessionID) ?? Session(id: sessionID, cwd: string("cwd") ?? "", now: now)
+    var s = Store.load(sessionID) ?? Session(id: sessionID, agent: agent, cwd: string("cwd") ?? "", now: now)
     s.updated = now
     if let cwd = string("cwd") { s.cwd = cwd }
     if let transcript = string("transcript_path") { s.transcript = transcript }
-    if s.pid.map({ !Proc.isAlive($0) }) ?? true { s.pid = Proc.owningClaude() }
-    if s.terminal == nil { s.terminal = terminalBundleID() }
+    if s.pid.map({ !Proc.isAlive($0) }) ?? true { s.pid = Proc.owningAgent() }
+    if s.terminal == nil { s.terminal = hostBundleID(agentPID: s.pid) }
 
     let tool = string("tool_name")
     let toolInput = event["tool_input"] as? [String: Any]
@@ -123,7 +144,7 @@ Store.locked {
 
     case "PreToolUse":
         switch tool {
-        case "AskUserQuestion":
+        case "AskUserQuestion", "request_user_input":
             let questions = toolInput?["questions"] as? [[String: Any]]
             attention("question", detail: oneLine(string("question", in: questions?.first), prose: true))
             s.tool = tool
@@ -141,7 +162,8 @@ Store.locked {
 
     case "PermissionRequest":
         // Questions and plans can't be answered by allow/deny; they stay in the terminal.
-        guard let tool, tool != "AskUserQuestion", tool != "ExitPlanMode", appIsRunning() else { break }
+        guard let tool, !["AskUserQuestion", "request_user_input", "ExitPlanMode"].contains(tool), appIsRunning()
+        else { break }
         let id = string("tool_use_id") ?? UUID().uuidString
         let detail = summary(tool: tool, input: toolInput)
         attention("permission", detail: detail)
@@ -171,6 +193,11 @@ Store.locked {
         s.clearActivity()
         s.detail = oneLine(string("last_assistant_message"), prose: true)
 
+    case "Interrupt":
+        // Codex tells us when a turn is cut short. Clearing the activity also drops any held prompt.
+        s.move(to: .idle, at: now)
+        s.clearActivity()
+
     case "StopFailure":
         s.move(to: .done, at: now)
         s.clearActivity()
@@ -185,8 +212,8 @@ Store.locked {
 }
 
 // Hold the prompt open until the dock answers. Anything else (timeout, the app
-// quitting, the person going to the terminal) falls back to Claude Code's own prompt.
-if let (id, claude) = awaiting {
+// quitting, the person going to the agent's own window) falls back to its own prompt.
+if let (id, owner) = awaiting {
     var verdict: Store.Verdict?
     let deadline = Date().addingTimeInterval(600)
     var beat = 0
@@ -194,7 +221,7 @@ if let (id, claude) = awaiting {
         if let found = Store.decision(for: id) { verdict = found; break }
         beat += 1
         if beat % 10 == 0 {
-            if !appIsRunning() || claude.map({ !Proc.isAlive($0) }) == true { break }
+            if !appIsRunning() || owner.map({ !Proc.isAlive($0) }) == true { break }
             if Store.load(sessionID)?.request?.id != id { break }
         }
         usleep(100_000)

@@ -97,7 +97,8 @@ final class SessionMonitor {
                 transcriptChecks[s.id] = nil
                 continue
             }
-            if (s.phase == .working || s.phase == .attention), wasInterrupted(s) {
+            let stalled = s.provider == .codex ? wentQuiet(s, now: now) : wasInterrupted(s)
+            if (s.phase == .working || s.phase == .attention), stalled {
                 Store.update(s.id) { latest in
                     guard latest.updated == s.updated else { return }
                     latest.move(to: .idle, at: now)
@@ -106,6 +107,16 @@ final class SessionMonitor {
             }
         }
         reload()
+    }
+
+    /// Codex reports interrupts itself, but has no hook for a turn that dies on an error. Treat ten silent
+    /// minutes, from hooks and from its transcript alike, as the turn being over so it can't stay "working" forever.
+    private func wentQuiet(_ s: Session, now: Double) -> Bool {
+        guard s.request == nil, now - s.updated > 600 else { return false }
+        guard let path = s.transcript,
+              let modified = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        else { return true }
+        return now - modified.timeIntervalSince1970 > 600
     }
 
     /// Esc leaves a "[Request interrupted by user]" entry as the last message in the transcript.

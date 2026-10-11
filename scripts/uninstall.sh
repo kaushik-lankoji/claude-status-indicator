@@ -3,10 +3,14 @@
 set -euo pipefail
 
 APP="$HOME/Applications/Claude Island.app"
-SETTINGS="$HOME/.claude/settings.json"
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+CODEX_HOOKS="${CODEX_HOME:-$HOME/.codex}/hooks.json"
 
-if [ -f "$SETTINGS" ]; then
-  TMP="$(mktemp)"
+# remove_hooks <file>: drops our hook entries, and the hooks key too if nothing else is left in it.
+remove_hooks() {
+  local file="$1" tmp
+  [ -f "$file" ] || return 0
+  tmp="$(mktemp)"
   jq '
     if .hooks then
       .hooks |= (
@@ -15,10 +19,15 @@ if [ -f "$SETTINGS" ]; then
       )
       | if .hooks == {} then del(.hooks) else . end
     else . end
-  ' "$SETTINGS" > "$TMP"
-  cat "$TMP" > "$SETTINGS" && rm "$TMP"
-  echo "Removed hooks from $SETTINGS"
-fi
+  ' "$file" > "$tmp"
+  cat "$tmp" > "$file" && rm "$tmp"
+  echo "Removed hooks from $file"
+}
+
+remove_hooks "$CLAUDE_SETTINGS"
+remove_hooks "$CODEX_HOOKS"
+# A hooks.json we created and nothing else uses is just noise.
+[ -f "$CODEX_HOOKS" ] && [ "$(jq -c . "$CODEX_HOOKS")" = "{}" ] && rm "$CODEX_HOOKS"
 
 pkill -x ClaudeIsland 2>/dev/null || true
 rm -rf "$APP" "$HOME/.claude-island"

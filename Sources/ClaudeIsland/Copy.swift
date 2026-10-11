@@ -9,7 +9,7 @@ extension Session {
             switch tool {
             case nil: return "Thinking"
             case "Bash": return "Running a command"
-            case "Edit", "MultiEdit", "Write", "NotebookEdit": return "Editing"
+            case "Edit", "MultiEdit", "Write", "NotebookEdit", "apply_patch": return "Editing"
             case "Read": return "Reading"
             case "Grep", "Glob": return "Searching"
             case "WebFetch", "WebSearch": return "Looking it up"
@@ -25,7 +25,7 @@ extension Session {
             default:
                 switch tool {
                 case "Bash": return "Run this command?"
-                case "Edit", "MultiEdit", "Write", "NotebookEdit": return "Edit this file?"
+                case "Edit", "MultiEdit", "Write", "NotebookEdit", "apply_patch": return "Edit this file?"
                 case "WebFetch": return "Open this site?"
                 case let tool?: return "Allow \(Self.pretty(tool))?"
                 case nil: return "Needs your approval"
@@ -45,7 +45,7 @@ extension Session {
     var subline: String? {
         if let detail { return detail }
         switch phase {
-        case .attention: return "Waiting in the terminal"
+        case .attention: return provider == .codex ? "Waiting in Codex" : "Waiting in the terminal"
         case .done: return failed == true ? "Something went wrong" : nil
         default: return nil
         }
