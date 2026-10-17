@@ -164,6 +164,8 @@ Store.locked {
         // Questions and plans can't be answered by allow/deny; they stay in the terminal.
         guard let tool, !["AskUserQuestion", "request_user_input", "ExitPlanMode"].contains(tool), appIsRunning()
         else { break }
+        // With Codex's auto-review on, its reviewer answers these itself and the person is never asked.
+        if agent == .codex, s.transcript.flatMap(Transcript.approvalsReviewer) == "auto_review" { break }
         let id = string("tool_use_id") ?? UUID().uuidString
         let detail = summary(tool: tool, input: toolInput)
         attention("permission", detail: detail)

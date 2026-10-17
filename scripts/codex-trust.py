@@ -16,12 +16,18 @@ import sys
 import threading
 import queue
 
-APP_CODEX = "/Applications/ChatGPT.app/Contents/Resources/codex"
+# Where the Codex desktop app keeps its bundled binary; it has moved between releases.
+APP_CODEX = [
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+]
 
 
 def find_codex():
-    if os.access(APP_CODEX, os.X_OK):
-        return APP_CODEX
+    for path in APP_CODEX:
+        if os.access(path, os.X_OK):
+            return path
     return shutil.which("codex")
 
 
